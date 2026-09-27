@@ -1,0 +1,858 @@
+=== ESTRUTURA DE DIRETÓRIOS ===
+./
+    browser.py
+    config.py
+    excel.py
+    main.py
+    matcher.py
+    projeto_contexto.txt
+    requirements.txt
+    resumo.py
+    scraper.py
+    utils.py
+    debug/
+        honda/
+        matsuo/
+        neno/
+        tracao/
+        yamaha/
+    input/
+        planilha_produtos_formatada_v4.xlsx
+    output/
+    sites/
+        honda.py
+        matsuo.py
+        neno.py
+        tracao.py
+        yamaha.py
+        __init__.py
+
+
+=== CONTEÚDO DOS ARQUIVOS ===
+
+--- INÍCIO DO ARQUIVO: .\browser.py ---
+from playwright.sync_api import sync_playwright
+
+
+class Browser:
+
+    def __init__(self, headless=False):
+
+        self.headless = headless
+        self.playwright = None
+        self.browser = None
+        self.context = None
+
+    def start(self):
+
+        self.playwright = sync_playwright().start()
+
+        self.browser = self.playwright.chromium.launch(
+            headless=self.headless
+        )
+
+        self.context = self.browser.new_context(
+            viewport={
+                "width": 1440,
+                "height": 900
+            },
+            locale="pt-BR",
+            user_agent=(
+                "Mozilla/5.0 "
+                "(Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 "
+                "(KHTML, like Gecko) "
+                "Chrome/140.0.0.0 Safari/537.36"
+            )
+        )
+
+    def new_page(self):
+
+        return self.context.new_page()
+
+    def close(self):
+
+        if self.browser:
+            self.browser.close()
+
+        if self.playwright:
+            self.playwright.stop()
+--- FIM DO ARQUIVO: .\browser.py ---
+
+--- INÍCIO DO ARQUIVO: .\config.py ---
+SITES = {
+    "tracao": {
+        "name": "Tração Motos Yamaha",
+        "url": "https://www.tracaomotosyamaha.com.br/",
+    },
+
+    "yamaha": {
+        "name": "Yamaha Motor Brasil",
+        "url": "https://www.yamaha-motor.com.br/",
+    },
+
+    "matsuo": {
+        "name": "Moto Matsuo",
+        "url": "https://www.motomatsuo.com.br/",
+    },
+
+    "honda": {
+        "name": "Honda Shop",
+        "url": "https://www.hondashop.com.br/",
+    },
+
+    "neno": {
+        "name": "Motos Neno Shop",
+        "url": "https://www.motosnenoshop.com.br/",
+    },
+}
+
+
+MATCH_AUTO = 95
+MATCH_REVIEW = 85
+--- FIM DO ARQUIVO: .\config.py ---
+
+--- INÍCIO DO ARQUIVO: .\excel.py ---
+from openpyxl import load_workbook
+
+
+def carregar_produtos(path):
+
+    wb = load_workbook(path)
+
+    ws = wb.active
+
+    produtos = []
+
+    for row in range(2, ws.max_row + 1):
+
+        woo_id = ws[f"A{row}"].value
+        sku = ws[f"B{row}"].value
+        nome = ws[f"D{row}"].value
+
+        if not nome:
+            continue
+
+        produtos.append({
+            "row": row,
+            "id": woo_id,
+            "sku": str(sku).strip() if sku else "",
+            "nome": str(nome).strip()
+        })
+
+    return wb, ws, produtos
+
+
+def salvar_preco(ws, row, preco):
+
+    ws[f"E{row}"] = preco
+--- FIM DO ARQUIVO: .\excel.py ---
+
+--- INÍCIO DO ARQUIVO: .\main.py ---
+import pandas as pd
+
+from scraper import Browser
+
+from sites.tracao import TracaoSite
+from sites.yamaha import YamahaSite
+
+from matcher import ordenar_resultados
+
+
+INPUT_FILE = "input/planilha_produtos_formatada_v4.xlsx"
+OUTPUT_FILE = "output/resultado_teste.xlsx"
+
+
+def main():
+
+    df = pd.read_excel(
+        INPUT_FILE
+    )
+
+    browser = Browser(
+        headless=False
+    )
+
+    browser.start()
+
+    sites = {
+
+        "tracao": TracaoSite(
+            browser
+        ),
+
+        "yamaha": YamahaSite(
+            browser
+        ),
+
+        # Os outros entram depois:
+        #
+        # "matsuo": MatsuoSite(browser),
+        # "honda": HondaSite(browser),
+        # "neno": NenoSite(browser),
+    }
+
+    resultados = []
+
+    try:
+
+        for index, row in df.iterrows():
+
+            produto = str(
+                row["Nome Atual"]
+            ).strip()
+
+            print()
+            print("=" * 80)
+            print(
+                f"Produto {index + 1}: "
+                f"{produto}"
+            )
+            print("=" * 80)
+
+            for site_name, site in sites.items():
+
+                print(
+                    f"\n🔎 Buscando no {site_name}..."
+                )
+
+                try:
+
+                    candidates = site.search(
+                        produto
+                    )
+
+                    print(
+                        f"Encontrados: "
+                        f"{len(candidates)}"
+                    )
+
+                    ranked = ordenar_resultados(
+                        produto,
+                        candidates
+                    )
+
+                    if not ranked:
+
+                        resultados.append({
+                            "produto_planilha": produto,
+                            "site": site_name,
+                            "status": "NAO_ENCONTRADO"
+                        })
+
+                        continue
+
+                    best = ranked[0]
+
+                    print(
+                        f"🏆 {best['name']}"
+                    )
+
+                    print(
+                        f"Score: "
+                        f"{best['score']}"
+                    )
+
+                    if best["score"] >= 95:
+
+                        status = "MATCH_AUTOMATICO"
+
+                    elif best["score"] >= 85:
+
+                        status = "REVISAR"
+
+                    else:
+
+                        status = "BAIXA_CONFIANCA"
+
+                    resultados.append({
+
+                        "produto_planilha":
+                            produto,
+
+                        "site":
+                            site_name,
+
+                        "produto_encontrado":
+                            best["name"],
+
+                        "score":
+                            best["score"],
+
+                        "url":
+                            best["url"],
+
+                        "status":
+                            status
+
+                    })
+
+                except Exception as e:
+
+                    print(
+                        f"❌ Erro: {e}"
+                    )
+
+                    resultados.append({
+
+                        "produto_planilha":
+                            produto,
+
+                        "site":
+                            site_name,
+
+                        "status":
+                            "ERRO",
+
+                        "erro":
+                            str(e)
+
+                    })
+
+    finally:
+
+        browser.close()
+
+    result_df = pd.DataFrame(
+        resultados
+    )
+
+    result_df.to_excel(
+        OUTPUT_FILE,
+        index=False
+    )
+
+    print()
+    print(
+        f"✅ Finalizado: {OUTPUT_FILE}"
+    )
+
+
+if __name__ == "__main__":
+    main()
+--- FIM DO ARQUIVO: .\main.py ---
+
+--- INÍCIO DO ARQUIVO: .\matcher.py ---
+from rapidfuzz import fuzz
+from utils import normalize_text
+
+
+def score_nome(original, candidato):
+
+    original = normalize_text(original)
+    candidato = normalize_text(candidato)
+
+    if not original or not candidato:
+        return 0
+
+    ratio = fuzz.ratio(
+        original,
+        candidato
+    )
+
+    token_sort = fuzz.token_sort_ratio(
+        original,
+        candidato
+    )
+
+    token_set = fuzz.token_set_ratio(
+        original,
+        candidato
+    )
+
+    wratio = fuzz.WRatio(
+        original,
+        candidato
+    )
+
+    score = (
+        ratio * 0.20 +
+        token_sort * 0.25 +
+        token_set * 0.25 +
+        wratio * 0.30
+    )
+
+    return round(score, 2)
+
+
+def ordenar_resultados(nome, candidatos):
+
+    resultados = []
+
+    for candidato in candidatos:
+
+        score = score_nome(
+            nome,
+            candidato["name"]
+        )
+
+        resultados.append({
+            **candidato,
+            "score": score
+        })
+
+    resultados.sort(
+        key=lambda x: x["score"],
+        reverse=True
+    )
+
+    return resultados
+--- FIM DO ARQUIVO: .\matcher.py ---
+
+--- INÍCIO DO ARQUIVO: .\projeto_contexto.txt ---
+
+--- FIM DO ARQUIVO: .\projeto_contexto.txt ---
+
+--- INÍCIO DO ARQUIVO: .\requirements.txt ---
+playwright
+pandas
+openpyxl
+rapidfuzz
+beautifulsoup4
+lxml
+--- FIM DO ARQUIVO: .\requirements.txt ---
+
+--- INÍCIO DO ARQUIVO: .\resumo.py ---
+import os
+
+def is_ignored(path, ignore_list):
+    """
+    Verifica se o caminho deve ser ignorado com base em uma lista de termos.
+    """
+    for ignore in ignore_list:
+        if ignore in path:
+            return True
+    return False
+
+def generate_project_context(output_file='projeto_contexto.txt'):
+    """
+    Percorre o diretório atual e consolida o conteúdo de arquivos de código
+    e configuração em um único arquivo de texto para análise.
+    """
+    
+    # Extensões de arquivos relevantes para o contexto do projeto
+    relevant_extensions = (
+        '.css', '.js', '.html', '.py', '.env', '.gitgnore', '.yml', 'Dockerfile', '.html', '.txt'
+    )
+    
+    # Diretórios e arquivos a serem ignorados para evitar poluição do contexto
+    ignore_list = [
+        '__pycache__', '.git', 'venv', 'env', 
+        'node_modules', '.idea', '.vscode', 
+        'gerar_contexto.py', 'package-lock.json',
+        'image_16f180.png' # Ignorando a imagem que você mandou
+    ]
+
+    with open(output_file, 'w', encoding='utf-8') as outfile:
+        # Escreve a estrutura de diretórios primeiro
+        outfile.write("=== ESTRUTURA DE DIRETÓRIOS ===\n")
+        for root, dirs, files in os.walk('.'):
+            # Modifica a lista dirs in-place para pular diretórios ignorados no walk
+            dirs[:] = [d for d in dirs if not is_ignored(d, ignore_list)]
+            
+            level = root.replace('.', '').count(os.sep)
+            indent = ' ' * 4 * (level)
+            outfile.write(f"{indent}{os.path.basename(root)}/\n")
+            subindent = ' ' * 4 * (level + 1)
+            for f in files:
+                if not is_ignored(f, ignore_list):
+                    outfile.write(f"{subindent}{f}\n")
+        
+        outfile.write("\n\n=== CONTEÚDO DOS ARQUIVOS ===\n\n")
+
+        # Escreve o conteúdo dos arquivos
+        for root, dirs, files in os.walk('.'):
+            dirs[:] = [d for d in dirs if not is_ignored(d, ignore_list)]
+            
+            for file in files:
+                if file.endswith(relevant_extensions) and not is_ignored(file, ignore_list):
+                    file_path = os.path.join(root, file)
+                    outfile.write(f"--- INÍCIO DO ARQUIVO: {file_path} ---\n")
+                    
+                    try:
+                        with open(file_path, 'r', encoding='utf-8') as infile:
+                            outfile.write(infile.read())
+                    except Exception as e:
+                        outfile.write(f"[Erro ao ler arquivo: {e}]\n")
+                        
+                    outfile.write(f"\n--- FIM DO ARQUIVO: {file_path} ---\n\n")
+
+    print(f"Arquivo '{output_file}' gerado com sucesso. Pode enviar para análise.")
+
+if __name__ == "__main__":
+    generate_project_context()
+--- FIM DO ARQUIVO: .\resumo.py ---
+
+--- INÍCIO DO ARQUIVO: .\scraper.py ---
+from playwright.sync_api import sync_playwright
+
+
+class Browser:
+
+    def __init__(self, headless=True):
+
+        self.headless = headless
+
+        self.playwright = None
+        self.browser = None
+        self.context = None
+
+    def start(self):
+
+        self.playwright = sync_playwright().start()
+
+        self.browser = self.playwright.chromium.launch(
+            headless=self.headless
+        )
+
+        self.context = self.browser.new_context(
+            viewport={
+                "width": 1440,
+                "height": 900
+            },
+
+            locale="pt-BR",
+
+            user_agent=(
+                "Mozilla/5.0 "
+                "(Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 "
+                "(KHTML, like Gecko) "
+                "Chrome/140 Safari/537.36"
+            )
+        )
+
+    def new_page(self):
+
+        return self.context.new_page()
+
+    def close(self):
+
+        if self.browser:
+            self.browser.close()
+
+        if self.playwright:
+            self.playwright.stop()
+--- FIM DO ARQUIVO: .\scraper.py ---
+
+--- INÍCIO DO ARQUIVO: .\utils.py ---
+import re
+import unicodedata
+
+
+def normalize_text(text):
+
+    if not text:
+        return ""
+
+    text = str(text).lower()
+
+    text = unicodedata.normalize(
+        "NFKD",
+        text
+    )
+
+    text = "".join(
+        c for c in text
+        if not unicodedata.combining(c)
+    )
+
+    text = re.sub(
+        r"[^a-z0-9\s]",
+        " ",
+        text
+    )
+
+    text = re.sub(
+        r"\s+",
+        " ",
+        text
+    )
+
+    return text.strip()
+
+
+def extract_price(text):
+
+    if not text:
+        return None
+
+    matches = re.findall(
+        r"R\$\s*[\d\.]+,\d{2}",
+        text
+    )
+
+    if not matches:
+        return None
+
+    return matches[0]
+--- FIM DO ARQUIVO: .\utils.py ---
+
+--- INÍCIO DO ARQUIVO: .\sites\honda.py ---
+
+--- FIM DO ARQUIVO: .\sites\honda.py ---
+
+--- INÍCIO DO ARQUIVO: .\sites\matsuo.py ---
+
+--- FIM DO ARQUIVO: .\sites\matsuo.py ---
+
+--- INÍCIO DO ARQUIVO: .\sites\neno.py ---
+
+--- FIM DO ARQUIVO: .\sites\neno.py ---
+
+--- INÍCIO DO ARQUIVO: .\sites\tracao.py ---
+from . import BaseSite
+from urllib.parse import quote
+
+
+class TracaoSite(BaseSite):
+
+    BASE_URL = "https://www.tracaomotosyamaha.com.br/"
+
+    def search(self, query):
+
+        page = self.browser.new_page()
+
+        try:
+
+            page.goto(
+                self.BASE_URL,
+                wait_until="domcontentloaded",
+                timeout=60000
+            )
+
+            search = page.locator(
+                'input[placeholder*="procura"]'
+            ).first
+
+            search.fill(query)
+
+            search.press("Enter")
+
+            page.wait_for_load_state(
+                "domcontentloaded"
+            )
+
+            page.wait_for_timeout(1500)
+
+            products = []
+
+            links = page.locator(
+                'a'
+            )
+
+            for i in range(
+                min(links.count(), 300)
+            ):
+
+                link = links.nth(i)
+
+                try:
+
+                    text = link.inner_text().strip()
+                    href = link.get_attribute("href")
+
+                    if (
+                        href
+                        and text
+                        and len(text) > 5
+                        and "R$" in text
+                    ):
+
+                        products.append({
+                            "name": text,
+                            "url": href
+                        })
+
+                except Exception:
+                    continue
+
+            return products
+
+        finally:
+
+            page.close()
+
+    def get_product(self, url):
+
+        page = self.browser.new_page()
+
+        try:
+
+            page.goto(
+                url,
+                wait_until="domcontentloaded",
+                timeout=60000
+            )
+
+            page.wait_for_timeout(1000)
+
+            title = page.locator(
+                "h1"
+            ).first.inner_text()
+
+            body = page.locator(
+                "body"
+            ).inner_text()
+
+            return {
+                "name": title,
+                "price": extract_price(body),
+                "description": body,
+                "url": url
+            }
+
+        finally:
+
+            page.close()
+
+
+def extract_price(text):
+
+    import re
+
+    matches = re.findall(
+        r"R\$\s*[\d\.]+,\d{2}",
+        text
+    )
+
+    if not matches:
+        return None
+
+    return matches[0]
+--- FIM DO ARQUIVO: .\sites\tracao.py ---
+
+--- INÍCIO DO ARQUIVO: .\sites\yamaha.py ---
+from . import BaseSite
+
+
+class YamahaSite(BaseSite):
+
+    BASE_URL = "https://www.yamaha-motor.com.br/"
+
+    def search(self, query):
+
+        page = self.browser.new_page()
+
+        try:
+
+            page.goto(
+                self.BASE_URL,
+                wait_until="domcontentloaded",
+                timeout=60000
+            )
+
+            search = page.locator(
+                'input[placeholder*="Buscar"]'
+            ).first
+
+            search.fill(query)
+
+            page.wait_for_timeout(2000)
+
+            products = []
+
+            links = page.locator(
+                'a[href*="/product/"]'
+            )
+
+            for i in range(
+                links.count()
+            ):
+
+                link = links.nth(i)
+
+                try:
+
+                    name = link.inner_text().strip()
+
+                    url = link.get_attribute(
+                        "href"
+                    )
+
+                    if name and url:
+
+                        if url.startswith("/"):
+
+                            url = (
+                                self.BASE_URL.rstrip("/")
+                                + url
+                            )
+
+                        products.append({
+                            "name": name,
+                            "url": url
+                        })
+
+                except Exception:
+                    continue
+
+            return products
+
+        finally:
+
+            page.close()
+
+    def get_product(self, url):
+
+        page = self.browser.new_page()
+
+        try:
+
+            page.goto(
+                url,
+                wait_until="domcontentloaded",
+                timeout=60000
+            )
+
+            page.wait_for_timeout(1000)
+
+            title = page.locator(
+                "h1"
+            ).first.inner_text()
+
+            body = page.locator(
+                "body"
+            ).inner_text()
+
+            return {
+                "name": title.strip(),
+                "price": self.extract_price(body),
+                "description": body,
+                "url": url
+            }
+
+        finally:
+
+            page.close()
+
+    @staticmethod
+    def extract_price(text):
+
+        import re
+
+        matches = re.findall(
+            r"R\$\s*[\d\.]+,\d{2}",
+            text
+        )
+
+        if not matches:
+            return None
+
+        return matches[0]
+--- FIM DO ARQUIVO: .\sites\yamaha.py ---
+
+--- INÍCIO DO ARQUIVO: .\sites\__init__.py ---
+class BaseSite:
+
+    def __init__(self, browser):
+
+        self.browser = browser
+
+    def search(self, query):
+        raise NotImplementedError
+
+    def get_product(self, url):
+        raise NotImplementedError
+--- FIM DO ARQUIVO: .\sites\__init__.py ---
+
