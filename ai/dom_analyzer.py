@@ -95,8 +95,9 @@ class DOMAnalyzer:
         Agora suporta fragmentos de href e classes primárias.
         """
         try:
+            # Adicione este 'r' antes das aspas para evitar SyntaxWarning
             return element.evaluate(
-                """
+                r"""
                 (el) => {
                     if (el.id) return "#" + CSS.escape(el.id);
                     
