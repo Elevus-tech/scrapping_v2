@@ -4,3 +4,4 @@ openpyxl
 rapidfuzz
 beautifulsoup4
 lxml
+openai

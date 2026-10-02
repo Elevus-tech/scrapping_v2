@@ -2,23 +2,31 @@
 ./
     browser.py
     config.py
+    estrutura_projeto.txt
     excel.py
     main.py
     matcher.py
     projeto_contexto.txt
     requirements.txt
     resumo.py
-    scraper.py
+    resumo_estrutua.py
     utils.py
+    ai/
+        agent.py
+        dom_analyzer.py
+        prompts.py
+        schemas.py
+        __init__.py
+    cache/
+        site_structures.json
     debug/
-        honda/
-        matsuo/
-        neno/
-        tracao/
-        yamaha/
+        yamaha_busca.png
+    engine/
     input/
+        planilha_produtos_formatada_v4-1.xlsx
         planilha_produtos_formatada_v4.xlsx
     output/
+        planilha_precos_atualizada.xlsx
     sites/
         honda.py
         matsuo.py
@@ -112,11 +120,59 @@ MATCH_AUTO = 95
 MATCH_REVIEW = 85
 --- FIM DO ARQUIVO: .\config.py ---
 
+--- INÍCIO DO ARQUIVO: .\estrutura_projeto.txt ---
+=== ESTRUTURA DE DIRETÓRIOS ===
+./
+    browser.py
+    config.py
+    estrutura_projeto.txt
+    excel.py
+    main.py
+    matcher.py
+    projeto_contexto.txt
+    requirements.txt
+    resumo.py
+    resumo_estrutua.py
+    utils.py
+    ai/
+    cache/
+        site_structures.json
+    debug/
+        yamaha_busca.png
+    engine/
+    input/
+        planilha_produtos_formatada_v4-1.xlsx
+        planilha_produtos_formatada_v4.xlsx
+    output/
+        planilha_precos_atualizada.xlsx
+    sites/
+        honda.py
+        matsuo.py
+        neno.py
+        tracao.py
+        yamaha.py
+        __init__.py
+
+--- FIM DO ARQUIVO: .\estrutura_projeto.txt ---
+
 --- INÍCIO DO ARQUIVO: .\excel.py ---
 from openpyxl import load_workbook
 
 
 def carregar_produtos(path):
+    """
+    Carrega a planilha e retorna:
+    - workbook
+    - worksheet
+    - lista de produtos
+
+    Estrutura esperada:
+    A = ID WooCommerce
+    B = SKU
+    C = Nome Normalizado (ignorado)
+    D = Nome Atual (usado na busca)
+    E = Preço
+    """
 
     wb = load_workbook(path)
 
@@ -144,36 +200,69 @@ def carregar_produtos(path):
 
 
 def salvar_preco(ws, row, preco):
+    """
+    Salva o preço encontrado na coluna E.
+    """
 
     ws[f"E{row}"] = preco
 --- FIM DO ARQUIVO: .\excel.py ---
 
 --- INÍCIO DO ARQUIVO: .\main.py ---
-import pandas as pd
+import os
 
 from scraper import Browser
+
+from excel import (
+    carregar_produtos,
+    salvar_preco
+)
+
+from matcher import ordenar_resultados
 
 from sites.tracao import TracaoSite
 from sites.yamaha import YamahaSite
 
-from matcher import ordenar_resultados
-
 
 INPUT_FILE = "input/planilha_produtos_formatada_v4.xlsx"
-OUTPUT_FILE = "output/resultado_teste.xlsx"
+
+OUTPUT_FILE = "output/planilha_precos_atualizada.xlsx"
 
 
 def main():
 
-    df = pd.read_excel(
+    print()
+    print("=" * 80)
+    print("🚀 SCRAPER DE PREÇOS")
+    print("=" * 80)
+    print()
+
+    # ---------------------------------------------------------
+    # 1. CARREGAR PLANILHA
+    # ---------------------------------------------------------
+
+    print("📊 Carregando planilha...")
+
+    wb, ws, produtos = carregar_produtos(
         INPUT_FILE
     )
+
+    print(
+        f"Produtos carregados: {len(produtos)}"
+    )
+
+    # ---------------------------------------------------------
+    # 2. INICIAR BROWSER
+    # ---------------------------------------------------------
 
     browser = Browser(
         headless=False
     )
 
     browser.start()
+
+    # ---------------------------------------------------------
+    # 3. SITES ATIVOS
+    # ---------------------------------------------------------
 
     sites = {
 
@@ -185,146 +274,297 @@ def main():
             browser
         ),
 
-        # Os outros entram depois:
+        # Entram depois:
         #
         # "matsuo": MatsuoSite(browser),
         # "honda": HondaSite(browser),
         # "neno": NenoSite(browser),
     }
 
-    resultados = []
-
     try:
 
-        for index, row in df.iterrows():
+        # -----------------------------------------------------
+        # 4. PROCESSAR PRODUTOS
+        # -----------------------------------------------------
 
-            produto = str(
-                row["Nome Atual"]
-            ).strip()
+        for index, produto in enumerate(
+            produtos,
+            start=1
+        ):
+
+            row = produto["row"]
+
+            nome = produto["nome"]
+
+            sku = produto["sku"]
+
+            woo_id = produto["id"]
 
             print()
             print("=" * 80)
+
             print(
-                f"Produto {index + 1}: "
-                f"{produto}"
+                f"Produto {index}/{len(produtos)}"
             )
+
+            print(
+                f"ID: {woo_id}"
+            )
+
+            print(
+                f"SKU: {sku}"
+            )
+
+            print(
+                f"Nome: {nome}"
+            )
+
             print("=" * 80)
+
+            preco_encontrado = None
+
+            # -------------------------------------------------
+            # 5. BUSCAR EM CADA SITE
+            # -------------------------------------------------
 
             for site_name, site in sites.items():
 
+                print()
                 print(
-                    f"\n🔎 Buscando no {site_name}..."
+                    f"🔎 Buscando no {site_name}..."
                 )
 
                 try:
 
                     candidates = site.search(
-                        produto
+                        nome
                     )
 
                     print(
-                        f"Encontrados: "
+                        f"   Candidatos encontrados: "
                         f"{len(candidates)}"
                     )
 
+                    # -----------------------------------------
+                    # Nenhum candidato
+                    # -----------------------------------------
+
+                    if not candidates:
+
+                        print(
+                            "   ⚠️ Nenhum candidato."
+                        )
+
+                        continue
+
+                    # -----------------------------------------
+                    # RANKING
+                    # -----------------------------------------
+
                     ranked = ordenar_resultados(
-                        produto,
+                        nome,
                         candidates
                     )
 
                     if not ranked:
 
-                        resultados.append({
-                            "produto_planilha": produto,
-                            "site": site_name,
-                            "status": "NAO_ENCONTRADO"
-                        })
+                        print(
+                            "   ⚠️ Nenhum resultado após "
+                            "matching."
+                        )
 
                         continue
 
+                    # -----------------------------------------
+                    # MELHOR RESULTADO
+                    # -----------------------------------------
+
                     best = ranked[0]
 
+                    score = best["score"]
+
                     print(
-                        f"🏆 {best['name']}"
+                        f"   🏆 Melhor candidato: "
+                        f"{best['name']}"
                     )
 
                     print(
-                        f"Score: "
-                        f"{best['score']}"
+                        f"   📊 Score: {score}"
                     )
 
-                    if best["score"] >= 95:
+                    print(
+                        f"   🔗 URL: {best['url']}"
+                    )
 
-                        status = "MATCH_AUTOMATICO"
+                    # -----------------------------------------
+                    # SCORE BAIXO
+                    # -----------------------------------------
 
-                    elif best["score"] >= 85:
+                    if score < 85:
 
-                        status = "REVISAR"
+                        print(
+                            "   ❌ Score abaixo de 85."
+                        )
 
-                    else:
+                        continue
 
-                        status = "BAIXA_CONFIANCA"
+                    # -----------------------------------------
+                    # REVISÃO MANUAL
+                    # -----------------------------------------
 
-                    resultados.append({
+                    if score < 95:
 
-                        "produto_planilha":
-                            produto,
+                        print(
+                            "   ⚠️ Score entre 85 e 94.99."
+                        )
 
-                        "site":
-                            site_name,
+                        print(
+                            "   ⏭️ Pulando para evitar "
+                            "preço incorreto."
+                        )
 
-                        "produto_encontrado":
-                            best["name"],
+                        continue
 
-                        "score":
-                            best["score"],
+                    # -----------------------------------------
+                    # MATCH AUTOMÁTICO
+                    # -----------------------------------------
 
-                        "url":
-                            best["url"],
+                    print(
+                        "   ✅ MATCH AUTOMÁTICO"
+                    )
 
-                        "status":
-                            status
+                    # -----------------------------------------
+                    # ABRIR PRODUTO
+                    # -----------------------------------------
 
-                    })
+                    print(
+                        "   🌐 Abrindo página do produto..."
+                    )
+
+                    product = site.get_product(
+                        best["url"]
+                    )
+
+                    if not product:
+
+                        print(
+                            "   ❌ Não foi possível "
+                            "obter os dados."
+                        )
+
+                        continue
+
+                    # -----------------------------------------
+                    # PREÇO
+                    # -----------------------------------------
+
+                    preco = product.get(
+                        "price"
+                    )
+
+                    print(
+                        f"   💰 Preço encontrado: "
+                        f"{preco}"
+                    )
+
+                    if not preco:
+
+                        print(
+                            "   ⚠️ Produto encontrado, "
+                            "mas preço não localizado."
+                        )
+
+                        continue
+
+                    # -----------------------------------------
+                    # SALVAR PREÇO
+                    # -----------------------------------------
+
+                    salvar_preco(
+                        ws,
+                        row,
+                        preco
+                    )
+
+                    preco_encontrado = preco
+
+                    print(
+                        "   💾 Preço salvo na coluna E."
+                    )
+
+                    # -----------------------------------------
+                    # NÃO PRECISA CONTINUAR NOS OUTROS SITES
+                    # -----------------------------------------
+
+                    break
 
                 except Exception as e:
 
                     print(
-                        f"❌ Erro: {e}"
+                        f"   ❌ Erro no site "
+                        f"{site_name}: {e}"
                     )
 
-                    resultados.append({
+                    continue
 
-                        "produto_planilha":
-                            produto,
+            # -------------------------------------------------
+            # RESULTADO DO PRODUTO
+            # -------------------------------------------------
 
-                        "site":
-                            site_name,
+            if preco_encontrado:
 
-                        "status":
-                            "ERRO",
+                print()
+                print(
+                    f"✅ Produto finalizado: "
+                    f"{preco_encontrado}"
+                )
 
-                        "erro":
-                            str(e)
+            else:
 
-                    })
+                print()
+                print(
+                    "⚠️ Nenhum preço automático "
+                    "foi salvo."
+                )
 
     finally:
 
         browser.close()
 
-    result_df = pd.DataFrame(
-        resultados
+    # ---------------------------------------------------------
+    # 6. GARANTIR DIRETÓRIO DE SAÍDA
+    # ---------------------------------------------------------
+
+    os.makedirs(
+        os.path.dirname(OUTPUT_FILE),
+        exist_ok=True
     )
 
-    result_df.to_excel(
-        OUTPUT_FILE,
-        index=False
+    # ---------------------------------------------------------
+    # 7. SALVAR NOVA PLANILHA
+    # ---------------------------------------------------------
+
+    wb.save(
+        OUTPUT_FILE
+    )
+
+    print()
+    print("=" * 80)
+    print("🎉 PROCESSAMENTO FINALIZADO")
+    print("=" * 80)
+
+    print()
+    print(
+        f"📁 Arquivo gerado:"
+    )
+
+    print(
+        OUTPUT_FILE
     )
 
     print()
     print(
-        f"✅ Finalizado: {OUTPUT_FILE}"
+        "A planilha original não foi alterada."
     )
 
 
@@ -400,7 +640,578 @@ def ordenar_resultados(nome, candidatos):
 --- FIM DO ARQUIVO: .\matcher.py ---
 
 --- INÍCIO DO ARQUIVO: .\projeto_contexto.txt ---
+=== ESTRUTURA DE DIRETÓRIOS ===
+./
+    browser.py
+    config.py
+    estrutura_projeto.txt
+    excel.py
+    main.py
+    matcher.py
+    projeto_contexto.txt
+    requirements.txt
+    resumo.py
+    resumo_estrutua.py
+    utils.py
+    ai/
+        agent.py
+        dom_analyzer.py
+        prompts.py
+        schemas.py
+        __init__.py
+    cache/
+        site_structures.json
+    debug/
+        yamaha_busca.png
+    engine/
+    input/
+        planilha_produtos_formatada_v4-1.xlsx
+        planilha_produtos_formatada_v4.xlsx
+    output/
+        planilha_precos_atualizada.xlsx
+    sites/
+        honda.py
+        matsuo.py
+        neno.py
+        tracao.py
+        yamaha.py
+        __init__.py
 
+
+=== CONTEÚDO DOS ARQUIVOS ===
+
+--- INÍCIO DO ARQUIVO: .\browser.py ---
+from playwright.sync_api import sync_playwright
+
+
+class Browser:
+
+    def __init__(self, headless=False):
+
+        self.headless = headless
+        self.playwright = None
+        self.browser = None
+        self.context = None
+
+    def start(self):
+
+        self.playwright = sync_playwright().start()
+
+        self.browser = self.playwright.chromium.launch(
+            headless=self.headless
+        )
+
+        self.context = self.browser.new_context(
+            viewport={
+                "width": 1440,
+                "height": 900
+            },
+            locale="pt-BR",
+            user_agent=(
+                "Mozilla/5.0 "
+                "(Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 "
+                "(KHTML, like Gecko) "
+                "Chrome/140.0.0.0 Safari/537.36"
+            )
+        )
+
+    def new_page(self):
+
+        return self.context.new_page()
+
+    def close(self):
+
+        if self.browser:
+            self.browser.close()
+
+        if self.playwright:
+            self.playwright.stop()
+--- FIM DO ARQUIVO: .\browser.py ---
+
+--- INÍCIO DO ARQUIVO: .\config.py ---
+SITES = {
+    "tracao": {
+        "name": "Tração Motos Yamaha",
+        "url": "https://www.tracaomotosyamaha.com.br/",
+    },
+
+    "yamaha": {
+        "name": "Yamaha Motor Brasil",
+        "url": "https://www.yamaha-motor.com.br/",
+    },
+
+    "matsuo": {
+        "name": "Moto Matsuo",
+        "url": "https://www.motomatsuo.com.br/",
+    },
+
+    "honda": {
+        "name": "Honda Shop",
+        "url": "https://www.hondashop.com.br/",
+    },
+
+    "neno": {
+        "name": "Motos Neno Shop",
+        "url": "https://www.motosnenoshop.com.br/",
+    },
+}
+
+
+MATCH_AUTO = 95
+MATCH_REVIEW = 85
+--- FIM DO ARQUIVO: .\config.py ---
+
+--- INÍCIO DO ARQUIVO: .\estrutura_projeto.txt ---
+=== ESTRUTURA DE DIRETÓRIOS ===
+./
+    browser.py
+    config.py
+    estrutura_projeto.txt
+    excel.py
+    main.py
+    matcher.py
+    projeto_contexto.txt
+    requirements.txt
+    resumo.py
+    resumo_estrutua.py
+    utils.py
+    ai/
+    cache/
+        site_structures.json
+    debug/
+        yamaha_busca.png
+    engine/
+    input/
+        planilha_produtos_formatada_v4-1.xlsx
+        planilha_produtos_formatada_v4.xlsx
+    output/
+        planilha_precos_atualizada.xlsx
+    sites/
+        honda.py
+        matsuo.py
+        neno.py
+        tracao.py
+        yamaha.py
+        __init__.py
+
+--- FIM DO ARQUIVO: .\estrutura_projeto.txt ---
+
+--- INÍCIO DO ARQUIVO: .\excel.py ---
+from openpyxl import load_workbook
+
+
+def carregar_produtos(path):
+    """
+    Carrega a planilha e retorna:
+    - workbook
+    - worksheet
+    - lista de produtos
+
+    Estrutura esperada:
+    A = ID WooCommerce
+    B = SKU
+    C = Nome Normalizado (ignorado)
+    D = Nome Atual (usado na busca)
+    E = Preço
+    """
+
+    wb = load_workbook(path)
+
+    ws = wb.active
+
+    produtos = []
+
+    for row in range(2, ws.max_row + 1):
+
+        woo_id = ws[f"A{row}"].value
+        sku = ws[f"B{row}"].value
+        nome = ws[f"D{row}"].value
+
+        if not nome:
+            continue
+
+        produtos.append({
+            "row": row,
+            "id": woo_id,
+            "sku": str(sku).strip() if sku else "",
+            "nome": str(nome).strip()
+        })
+
+    return wb, ws, produtos
+
+
+def salvar_preco(ws, row, preco):
+    """
+    Salva o preço encontrado na coluna E.
+    """
+
+    ws[f"E{row}"] = preco
+--- FIM DO ARQUIVO: .\excel.py ---
+
+--- INÍCIO DO ARQUIVO: .\main.py ---
+import os
+
+from scraper import Browser
+
+from excel import (
+    carregar_produtos,
+    salvar_preco
+)
+
+from matcher import ordenar_resultados
+
+from sites.tracao import TracaoSite
+from sites.yamaha import YamahaSite
+
+
+INPUT_FILE = "input/planilha_produtos_formatada_v4.xlsx"
+
+OUTPUT_FILE = "output/planilha_precos_atualizada.xlsx"
+
+
+def main():
+
+    print()
+    print("=" * 80)
+    print("🚀 SCRAPER DE PREÇOS")
+    print("=" * 80)
+    print()
+
+    # ---------------------------------------------------------
+    # 1. CARREGAR PLANILHA
+    # ---------------------------------------------------------
+
+    print("📊 Carregando planilha...")
+
+    wb, ws, produtos = carregar_produtos(
+        INPUT_FILE
+    )
+
+    print(
+        f"Produtos carregados: {len(produtos)}"
+    )
+
+    # ---------------------------------------------------------
+    # 2. INICIAR BROWSER
+    # ---------------------------------------------------------
+
+    browser = Browser(
+        headless=False
+    )
+
+    browser.start()
+
+    # ---------------------------------------------------------
+    # 3. SITES ATIVOS
+    # ---------------------------------------------------------
+
+    sites = {
+
+        "tracao": TracaoSite(
+            browser
+        ),
+
+        "yamaha": YamahaSite(
+            browser
+        ),
+
+        # Entram depois:
+        #
+        # "matsuo": MatsuoSite(browser),
+        # "honda": HondaSite(browser),
+        # "neno": NenoSite(browser),
+    }
+
+    try:
+
+        # -----------------------------------------------------
+        # 4. PROCESSAR PRODUTOS
+        # -----------------------------------------------------
+
+        for index, produto in enumerate(
+            produtos,
+            start=1
+        ):
+
+            row = produto["row"]
+
+            nome = produto["nome"]
+
+            sku = produto["sku"]
+
+            woo_id = produto["id"]
+
+            print()
+            print("=" * 80)
+
+            print(
+                f"Produto {index}/{len(produtos)}"
+            )
+
+            print(
+                f"ID: {woo_id}"
+            )
+
+            print(
+                f"SKU: {sku}"
+            )
+
+            print(
+                f"Nome: {nome}"
+            )
+
+            print("=" * 80)
+
+            preco_encontrado = None
+
+            # -------------------------------------------------
+            # 5. BUSCAR EM CADA SITE
+            # -------------------------------------------------
+
+            for site_name, site in sites.items():
+
+                print()
+                print(
+                    f"🔎 Buscando no {site_name}..."
+                )
+
+                try:
+
+                    candidates = site.search(
+                        nome
+                    )
+
+                    print(
+                        f"   Candidatos encontrados: "
+                        f"{len(candidates)}"
+                    )
+
+                    # -----------------------------------------
+                    # Nenhum candidato
+                    # -----------------------------------------
+
+                    if not candidates:
+
+                        print(
+                            "   ⚠️ Nenhum candidato."
+                        )
+
+                        continue
+
+                    # -----------------------------------------
+                    # RANKING
+                    # -----------------------------------------
+
+                    ranked = ordenar_resultados(
+                        nome,
+                        candidates
+                    )
+
+                    if not ranked:
+
+                        print(
+                            "   ⚠️ Nenhum resultado após "
+                            "matching."
+                        )
+
+                        continue
+
+                    # -----------------------------------------
+                    # MELHOR RESULTADO
+                    # -----------------------------------------
+
+                    best = ranked[0]
+
+                    score = best["score"]
+
+                    print(
+                        f"   🏆 Melhor candidato: "
+                        f"{best['name']}"
+                    )
+
+                    print(
+                        f"   📊 Score: {score}"
+                    )
+
+                    print(
+                        f"   🔗 URL: {best['url']}"
+                    )
+
+                    # -----------------------------------------
+                    # SCORE BAIXO
+                    # -----------------------------------------
+
+                    if score < 85:
+
+                        print(
+                            "   ❌ Score abaixo de 85."
+                        )
+
+                        continue
+
+                    # -----------------------------------------
+                    # REVISÃO MANUAL
+                    # -----------------------------------------
+
+                    if score < 95:
+
+                        print(
+                            "   ⚠️ Score entre 85 e 94.99."
+                        )
+
+                        print(
+                            "   ⏭️ Pulando para evitar "
+                            "preço incorreto."
+                        )
+
+                        continue
+
+                    # -----------------------------------------
+                    # MATCH AUTOMÁTICO
+                    # -----------------------------------------
+
+                    print(
+                        "   ✅ MATCH AUTOMÁTICO"
+                    )
+
+                    # -----------------------------------------
+                    # ABRIR PRODUTO
+                    # -----------------------------------------
+
+                    print(
+                        "   🌐 Abrindo página do produto..."
+                    )
+
+                    product = site.get_product(
+                        best["url"]
+                    )
+
+                    if not product:
+
+                        print(
+                            "   ❌ Não foi possível "
+                            "obter os dados."
+                        )
+
+                        continue
+
+                    # -----------------------------------------
+                    # PREÇO
+                    # -----------------------------------------
+
+                    preco = product.get(
+                        "price"
+                    )
+
+                    print(
+                        f"   💰 Preço encontrado: "
+                        f"{preco}"
+                    )
+
+                    if not preco:
+
+                        print(
+                            "   ⚠️ Produto encontrado, "
+                            "mas preço não localizado."
+                        )
+
+                        continue
+
+                    # -----------------------------------------
+                    # SALVAR PREÇO
+                    # -----------------------------------------
+
+                    salvar_preco(
+                        ws,
+                        row,
+                        preco
+                    )
+
+                    preco_encontrado = preco
+
+                    print(
+                        "   💾 Preço salvo na coluna E."
+                    )
+
+                    # -----------------------------------------
+                    # NÃO PRECISA CONTINUAR NOS OUTROS SITES
+                    # -----------------------------------------
+
+                    break
+
+                except Exception as e:
+
+                    print(
+                        f"   ❌ Erro no site "
+                        f"{site_name}: {e}"
+                    )
+
+                    continue
+
+            # -------------------------------------------------
+            # RESULTADO DO PRODUTO
+            # -------------------------------------------------
+
+            if preco_encontrado:
+
+                print()
+                print(
+                    f"✅ Produto finalizado: "
+                    f"{preco_encontrado}"
+                )
+
+            else:
+
+                print()
+                print(
+                    "⚠️ Nenhum preço automático "
+                    "foi salvo."
+                )
+
+    finally:
+
+        browser.close()
+
+    # ---------------------------------------------------------
+    # 6. GARANTIR DIRETÓRIO DE SAÍDA
+    # ---------------------------------------------------------
+
+    os.makedirs(
+        os.path.dirname(OUTPUT_FILE),
+        exist_ok=True
+    )
+
+    # ---------------------------------------------------------
+    # 7. SALVAR NOVA PLANILHA
+    # ---------------------------------------------------------
+
+    wb.save(
+        OUTPUT_FILE
+    )
+
+    print()
+    print("=" * 80)
+    print("🎉 PROCESSAMENTO FINALIZADO")
+    print("=" * 80)
+
+    print()
+    print(
+        f"📁 Arquivo gerado:"
+    )
+
+    print(
+        OUTPUT_FILE
+    )
+
+    print()
+    print(
+        "A planilha original não foi alterada."
+    )
+
+
+if __name__ == "__main__":
+    main()
 --- FIM DO ARQUIVO: .\projeto_contexto.txt ---
 
 --- INÍCIO DO ARQUIVO: .\requirements.txt ---
@@ -410,6 +1221,7 @@ openpyxl
 rapidfuzz
 beautifulsoup4
 lxml
+openai
 --- FIM DO ARQUIVO: .\requirements.txt ---
 
 --- INÍCIO DO ARQUIVO: .\resumo.py ---
@@ -483,57 +1295,53 @@ if __name__ == "__main__":
     generate_project_context()
 --- FIM DO ARQUIVO: .\resumo.py ---
 
---- INÍCIO DO ARQUIVO: .\scraper.py ---
-from playwright.sync_api import sync_playwright
+--- INÍCIO DO ARQUIVO: .\resumo_estrutua.py ---
+import os
 
+def is_ignored(path, ignore_list):
+    """
+    Verifica se o caminho deve ser ignorado com base em uma lista de termos.
+    """
+    for ignore in ignore_list:
+        if ignore in path:
+            return True
+    return False
 
-class Browser:
+def generate_project_structure(output_file='estrutura_projeto.txt'):
+    """
+    Percorre o diretório atual e salva apenas a estrutura de pastas e arquivos
+    em um arquivo de texto.
+    """
+    
+    # Diretórios e arquivos a serem ignorados para evitar poluição da listagem
+    ignore_list = [
+        '__pycache__', '.git', 'venv', 'env', 
+        'node_modules', '.idea', '.vscode', 
+        'gerar_contexto.py', 'package-lock.json',
+        'image_16f180.png' # Ignorando a imagem que você mandou
+    ]
 
-    def __init__(self, headless=True):
+    with open(output_file, 'w', encoding='utf-8') as outfile:
+        # Escreve a estrutura de diretórios
+        outfile.write("=== ESTRUTURA DE DIRETÓRIOS ===\n")
+        for root, dirs, files in os.walk('.'):
+            # Modifica a lista dirs in-place para pular diretórios ignorados no walk
+            dirs[:] = [d for d in dirs if not is_ignored(d, ignore_list)]
+            
+            level = root.replace('.', '').count(os.sep)
+            indent = ' ' * 4 * (level)
+            outfile.write(f"{indent}{os.path.basename(root)}/\n")
+            
+            subindent = ' ' * 4 * (level + 1)
+            for f in files:
+                if not is_ignored(f, ignore_list):
+                    outfile.write(f"{subindent}{f}\n")
 
-        self.headless = headless
+    print(f"Arquivo '{output_file}' gerado com sucesso contendo apenas a estrutura.")
 
-        self.playwright = None
-        self.browser = None
-        self.context = None
-
-    def start(self):
-
-        self.playwright = sync_playwright().start()
-
-        self.browser = self.playwright.chromium.launch(
-            headless=self.headless
-        )
-
-        self.context = self.browser.new_context(
-            viewport={
-                "width": 1440,
-                "height": 900
-            },
-
-            locale="pt-BR",
-
-            user_agent=(
-                "Mozilla/5.0 "
-                "(Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 "
-                "(KHTML, like Gecko) "
-                "Chrome/140 Safari/537.36"
-            )
-        )
-
-    def new_page(self):
-
-        return self.context.new_page()
-
-    def close(self):
-
-        if self.browser:
-            self.browser.close()
-
-        if self.playwright:
-            self.playwright.stop()
---- FIM DO ARQUIVO: .\scraper.py ---
+if __name__ == "__main__":
+    generate_project_structure()
+--- FIM DO ARQUIVO: .\resumo_estrutua.py ---
 
 --- INÍCIO DO ARQUIVO: .\utils.py ---
 import re
@@ -588,6 +1396,456 @@ def extract_price(text):
     return matches[0]
 --- FIM DO ARQUIVO: .\utils.py ---
 
+--- INÍCIO DO ARQUIVO: .\ai\agent.py ---
+import json
+import os
+
+from .dom_analyzer import DOMAnalyzer
+from .prompts import (
+    SEARCH_FIELD_PROMPT,
+    RESULTS_PROMPT,
+    PRODUCT_PROMPT,
+)
+
+
+class AIAgent:
+
+    def __init__(self, api_key=None, model=None):
+        self.api_key = api_key or os.getenv("AI_API_KEY")
+        self.model = model or os.getenv(
+            "AI_MODEL",
+            "gpt-5.6-mini"
+        )
+
+        self.dom_analyzer = DOMAnalyzer()
+
+    def find_search_field(self, page):
+        dom = self.dom_analyzer.analyze(page)
+
+        response = self._ask_ai(
+            SEARCH_FIELD_PROMPT,
+            dom
+        )
+
+        return self._parse_response(response)
+
+    def identify_search_results(self, page):
+        dom = self.dom_analyzer.analyze(page)
+
+        response = self._ask_ai(
+            RESULTS_PROMPT,
+            dom
+        )
+
+        return self._parse_response(response)
+
+    def identify_product_data(self, page):
+        dom = self.dom_analyzer.analyze(page)
+
+        response = self._ask_ai(
+            PRODUCT_PROMPT,
+            dom
+        )
+
+        return self._parse_response(response)
+
+    def _ask_ai(self, system_prompt, data):
+        """
+        Ponto central de comunicação com o modelo.
+
+        A implementação do provedor fica isolada aqui.
+        """
+
+        if not self.api_key:
+            raise RuntimeError(
+                "AI_API_KEY não configurada."
+            )
+
+        # IMPORTANTE:
+        # A chamada efetiva da API será implementada
+        # na próxima parte da integração.
+
+        raise NotImplementedError(
+            "Integração com o provedor de IA ainda não configurada."
+        )
+
+    def _parse_response(self, response):
+        if isinstance(response, dict):
+            return response
+
+        try:
+            return json.loads(response)
+
+        except json.JSONDecodeError as error:
+            return {
+                "success": False,
+                "confidence": 0,
+                "reason": (
+                    "A IA retornou uma resposta "
+                    f"que não é JSON válido: {error}"
+                )
+            }
+--- FIM DO ARQUIVO: .\ai\agent.py ---
+
+--- INÍCIO DO ARQUIVO: .\ai\dom_analyzer.py ---
+from playwright.sync_api import Page
+
+
+class DOMAnalyzer:
+
+    def __init__(self, max_elements=250):
+        self.max_elements = max_elements
+
+    def analyze(self, page: Page):
+        """
+        Analisa a página atual e retorna uma representação
+        simplificada dos elementos relevantes.
+        """
+
+        elements = page.locator(
+            "input, textarea, button, a, select, "
+            "[role='button'], [role='search'], "
+            "[aria-label], [placeholder]"
+        )
+
+        count = min(elements.count(), self.max_elements)
+
+        results = []
+
+        for i in range(count):
+            try:
+                element = elements.nth(i)
+
+                if not element.is_visible():
+                    continue
+
+                tag = element.evaluate(
+                    "(el) => el.tagName.toLowerCase()"
+                )
+
+                text = self._safe_text(element)
+                placeholder = self._safe_attribute(
+                    element,
+                    "placeholder"
+                )
+                aria_label = self._safe_attribute(
+                    element,
+                    "aria-label"
+                )
+                href = self._safe_attribute(
+                    element,
+                    "href"
+                )
+                input_type = self._safe_attribute(
+                    element,
+                    "type"
+                )
+
+                selector = self._build_selector(element)
+
+                item = {
+                    "index": i,
+                    "tag": tag,
+                    "text": self._limit(text, 300),
+                    "placeholder": self._limit(
+                        placeholder,
+                        150
+                    ),
+                    "aria_label": self._limit(
+                        aria_label,
+                        150
+                    ),
+                    "type": input_type,
+                    "href": self._limit(href, 300),
+                    "selector": selector,
+                }
+
+                results.append(item)
+
+            except Exception:
+                continue
+
+        return {
+            "url": page.url,
+            "title": page.title(),
+            "elements": results
+        }
+
+    def _safe_text(self, element):
+        try:
+            return element.inner_text().strip()
+        except Exception:
+            return ""
+
+    def _safe_attribute(self, element, name):
+        try:
+            value = element.get_attribute(name)
+            return value.strip() if value else ""
+        except Exception:
+            return ""
+
+    def _limit(self, value, size):
+        if not value:
+            return ""
+
+        value = str(value)
+
+        if len(value) <= size:
+            return value
+
+        return value[:size] + "..."
+
+    def _build_selector(self, element):
+        """
+        Cria um seletor CSS baseado no elemento.
+
+        Prioridade:
+        ID → name → combinação tag + atributos.
+        """
+
+        try:
+            return element.evaluate(
+                """
+                (el) => {
+                    if (el.id) {
+                        return "#" + CSS.escape(el.id);
+                    }
+
+                    if (el.getAttribute("name")) {
+                        const name = el.getAttribute("name");
+
+                        return el.tagName.toLowerCase()
+                            + '[name="'
+                            + CSS.escape(name)
+                            + '"]';
+                    }
+
+                    if (el.getAttribute("placeholder")) {
+                        const placeholder =
+                            el.getAttribute("placeholder");
+
+                        return el.tagName.toLowerCase()
+                            + '[placeholder="'
+                            + CSS.escape(placeholder)
+                            + '"]';
+                    }
+
+                    if (el.getAttribute("aria-label")) {
+                        const aria =
+                            el.getAttribute("aria-label");
+
+                        return el.tagName.toLowerCase()
+                            + '[aria-label="'
+                            + CSS.escape(aria)
+                            + '"]';
+                    }
+
+                    return el.tagName.toLowerCase();
+                }
+                """
+            )
+
+        except Exception:
+            return ""
+--- FIM DO ARQUIVO: .\ai\dom_analyzer.py ---
+
+--- INÍCIO DO ARQUIVO: .\ai\prompts.py ---
+SEARCH_FIELD_PROMPT = """
+Você é um agente especializado em analisar páginas de lojas virtuais.
+
+Sua tarefa é identificar QUAL elemento da página representa o campo
+principal de busca de produtos.
+
+Você receberá uma lista estruturada de elementos encontrados na página.
+
+Procure principalmente por:
+
+- inputs de texto
+- inputs com placeholder relacionado a busca
+- campos com aria-label relacionado a busca
+- campos próximos a botões de busca
+- elementos com textos como:
+  "buscar"
+  "pesquisar"
+  "procure"
+  "o que você procura"
+  "digite o produto"
+  "buscar produtos"
+  "search"
+
+IMPORTANTE:
+
+1. Não escolha campos de login.
+2. Não escolha campos de newsletter.
+3. Não escolha campos de e-mail.
+4. Não escolha filtros de produtos.
+5. Não escolha campos de CEP.
+6. Priorize o campo de busca global da loja.
+7. O seletor retornado precisa ser utilizável pelo Playwright.
+8. Prefira um seletor CSS simples e estável.
+9. Se houver mais de uma possibilidade, escolha a mais provável.
+
+Responda SOMENTE com JSON válido neste formato:
+
+{
+    "success": true,
+    "selector": "SELETOR_CSS",
+    "confidence": 0.0,
+    "reason": "Explicação curta"
+}
+
+Se não conseguir identificar um campo de busca:
+
+{
+    "success": false,
+    "selector": null,
+    "confidence": 0.0,
+    "reason": "Motivo"
+}
+"""
+
+
+RESULTS_PROMPT = """
+Você é um agente especializado em analisar páginas de resultados de lojas virtuais.
+
+A página acabou de receber uma pesquisa por um produto.
+
+Sua tarefa é identificar quais elementos representam os RESULTADOS DA BUSCA.
+
+Você receberá uma lista estruturada de elementos da página.
+
+Procure por grupos de produtos contendo:
+
+- nome do produto
+- link para produto
+- imagem do produto
+- preço
+- elementos repetidos com estrutura semelhante
+
+IMPORTANTE:
+
+Não confunda:
+
+- produtos recomendados
+- produtos em destaque
+- produtos mais vendidos
+- banners
+- categorias
+- menus
+- produtos aleatórios da página
+
+com os resultados da pesquisa.
+
+Responda SOMENTE com JSON válido:
+
+{
+    "success": true,
+    "card_selector": "SELETOR_CSS",
+    "name_selector": "SELETOR_RELATIVO",
+    "link_selector": "SELETOR_RELATIVO",
+    "confidence": 0.0,
+    "reason": "Explicação curta"
+}
+
+Se não conseguir identificar:
+
+{
+    "success": false,
+    "card_selector": null,
+    "name_selector": null,
+    "link_selector": null,
+    "confidence": 0.0,
+    "reason": "Motivo"
+}
+"""
+
+
+PRODUCT_PROMPT = """
+Você é um agente especializado em analisar páginas individuais de produtos
+de lojas virtuais.
+
+Sua tarefa é identificar os principais elementos do produto.
+
+Precisamos localizar:
+
+1. Preço principal do produto.
+2. Descrição completa do produto.
+
+A descrição pode estar dentro de:
+
+- div
+- section
+- article
+- tab
+- accordion
+- bloco de descrição
+- rich text
+- HTML formatado
+
+IMPORTANTE:
+
+Não escolha:
+
+- descrição de produtos relacionados
+- descrição do menu
+- texto de avaliações
+- especificações de outros produtos
+- textos institucionais
+
+Para a descrição, queremos o elemento que contenha o conteúdo completo,
+preservando sua estrutura HTML.
+
+Responda SOMENTE com JSON válido:
+
+{
+    "success": true,
+    "price_selector": "SELETOR_CSS",
+    "description_selector": "SELETOR_CSS",
+    "confidence": 0.0,
+    "reason": "Explicação curta"
+}
+
+Se não conseguir identificar:
+
+{
+    "success": false,
+    "price_selector": null,
+    "description_selector": null,
+    "confidence": 0.0,
+    "reason": "Motivo"
+}
+"""
+--- FIM DO ARQUIVO: .\ai\prompts.py ---
+
+--- INÍCIO DO ARQUIVO: .\ai\schemas.py ---
+from dataclasses import dataclass
+from typing import Optional
+
+
+@dataclass
+class SearchField:
+    selector: str
+    confidence: float
+    reason: str = ""
+
+
+@dataclass
+class AIResponse:
+    success: bool
+    data: Optional[dict] = None
+    error: Optional[str] = None
+--- FIM DO ARQUIVO: .\ai\schemas.py ---
+
+--- INÍCIO DO ARQUIVO: .\ai\__init__.py ---
+from .agent import AIAgent
+from .dom_analyzer import DOMAnalyzer
+
+__all__ = [
+    "AIAgent",
+    "DOMAnalyzer",
+]
+--- FIM DO ARQUIVO: .\ai\__init__.py ---
+
 --- INÍCIO DO ARQUIVO: .\sites\honda.py ---
 
 --- FIM DO ARQUIVO: .\sites\honda.py ---
@@ -602,7 +1860,8 @@ def extract_price(text):
 
 --- INÍCIO DO ARQUIVO: .\sites\tracao.py ---
 from . import BaseSite
-from urllib.parse import quote
+
+from utils import extract_price
 
 
 class TracaoSite(BaseSite):
@@ -637,12 +1896,12 @@ class TracaoSite(BaseSite):
 
             products = []
 
-            links = page.locator(
-                'a'
-            )
+            links = page.locator("a")
+
+            total_links = links.count()
 
             for i in range(
-                min(links.count(), 300)
+                min(total_links, 300)
             ):
 
                 link = links.nth(i)
@@ -650,7 +1909,10 @@ class TracaoSite(BaseSite):
                 try:
 
                     text = link.inner_text().strip()
-                    href = link.get_attribute("href")
+
+                    href = link.get_attribute(
+                        "href"
+                    )
 
                     if (
                         href
@@ -665,6 +1927,7 @@ class TracaoSite(BaseSite):
                         })
 
                 except Exception:
+
                     continue
 
             return products
@@ -696,7 +1959,7 @@ class TracaoSite(BaseSite):
             ).inner_text()
 
             return {
-                "name": title,
+                "name": title.strip(),
                 "price": extract_price(body),
                 "description": body,
                 "url": url
@@ -705,21 +1968,6 @@ class TracaoSite(BaseSite):
         finally:
 
             page.close()
-
-
-def extract_price(text):
-
-    import re
-
-    matches = re.findall(
-        r"R\$\s*[\d\.]+,\d{2}",
-        text
-    )
-
-    if not matches:
-        return None
-
-    return matches[0]
 --- FIM DO ARQUIVO: .\sites\tracao.py ---
 
 --- INÍCIO DO ARQUIVO: .\sites\yamaha.py ---
@@ -736,29 +1984,153 @@ class YamahaSite(BaseSite):
 
         try:
 
+            print("   🌐 Abrindo Yamaha...")
+
             page.goto(
                 self.BASE_URL,
                 wait_until="domcontentloaded",
                 timeout=60000
             )
 
+            page.wait_for_timeout(3000)
+
+            # ============================================================
+            # 1. TENTAR FECHAR POPUPS / COOKIES
+            # ============================================================
+
+            self.fechar_popups(page)
+
+            page.wait_for_timeout(1000)
+
+            # ============================================================
+            # 2. LOCALIZAR CAMPO DE BUSCA VISÍVEL
+            # ============================================================
+
             search = page.locator(
                 'input[placeholder*="Buscar"]'
+            ).filter(
+                visible=True
             ).first
+
+            # Caso o seletor acima não encontre um campo visível,
+            # tentamos outros campos de busca comuns.
+            if not search.is_visible():
+
+                print("   🔍 Campo de busca visível não encontrado.")
+
+                candidatos = [
+                    'input[type="search"]',
+                    'input[aria-label*="Buscar"]',
+                    'input[placeholder*="buscar"]',
+                    'input[placeholder*="BUSCAR"]',
+                    'input[placeholder*="Digite"]',
+                ]
+
+                search = None
+
+                for seletor in candidatos:
+
+                    try:
+
+                        locator = page.locator(seletor).filter(
+                            visible=True
+                        ).first
+
+                        if locator.is_visible():
+
+                            search = locator
+
+                            print(
+                                f"   ✅ Campo encontrado: {seletor}"
+                            )
+
+                            break
+
+                    except Exception:
+                        continue
+
+            if not search:
+
+                raise Exception(
+                    "Campo de busca visível da Yamaha não foi encontrado."
+                )
+
+            # ============================================================
+            # 3. PREENCHER BUSCA
+            # ============================================================
+
+            print(
+                f"   🔎 Pesquisando: {query}"
+            )
+
+            search.click()
 
             search.fill(query)
 
-            page.wait_for_timeout(2000)
+            page.wait_for_timeout(500)
+
+            search.press("Enter")
+
+            page.screenshot(
+                path="debug/yamaha_busca.png",
+                full_page=True
+            )
+
+            page.wait_for_timeout(5000)
+
+            print("\n========== DEBUG LINKS RESULTADO ==========")
+
+            links = page.locator('a[href*="/product/"]')
+
+            for i in range(links.count()):
+
+                link = links.nth(i)
+
+                try:
+
+                    texto = link.inner_text().strip()
+                    href = link.get_attribute("href")
+
+                    if texto and (
+                        "FACTOR" in texto.upper()
+                        or "MOVE BRASIL" in texto.upper()
+                    ):
+
+                        print("\n--- LINK ---")
+                        print("TEXTO:", texto)
+                        print("URL:", href)
+
+                        print(
+                            "HTML:",
+                            link.evaluate(
+                                "(el) => el.outerHTML"
+                            )[:3000]
+                        )
+
+                except Exception:
+                    continue
+
+            print("========== FIM DEBUG LINKS ==========\n")
+
+            # ============================================================
+            # 4. AGUARDAR RESULTADOS
+            # ============================================================
+
+            page.wait_for_timeout(3000)
 
             products = []
 
             links = page.locator(
-                'a[href*="/product/"]'
+                'a[href*="/product/"][class*="bg-neutral-600"]'
             )
 
-            for i in range(
-                links.count()
-            ):
+            total_links = links.count()
+
+            print(
+                f"   📦 Links de produtos encontrados: {total_links}"
+            )
+
+            for i in range(total_links):
 
                 link = links.nth(i)
 
@@ -792,6 +2164,70 @@ class YamahaSite(BaseSite):
         finally:
 
             page.close()
+
+    # ================================================================
+    # POPUPS
+    # ================================================================
+
+    def fechar_popups(self, page):
+
+        seletores = [
+
+            # Cookies / LGPD
+            'button:has-text("Aceitar")',
+            'button:has-text("Aceitar todos")',
+            'button:has-text("Aceitar cookies")',
+            'button:has-text("Concordo")',
+
+            # Possíveis variações
+            '[role="button"]:has-text("Aceitar")',
+            '[role="button"]:has-text("Concordo")',
+
+            # Fechar modal
+            'button[aria-label="Fechar"]',
+            'button[aria-label="Close"]',
+            '[aria-label="Fechar"]',
+            '[aria-label="Close"]',
+
+        ]
+
+        for seletor in seletores:
+
+            try:
+
+                elementos = page.locator(seletor)
+
+                quantidade = elementos.count()
+
+                for i in range(quantidade):
+
+                    elemento = elementos.nth(i)
+
+                    if elemento.is_visible():
+
+                        try:
+
+                            elemento.click(
+                                timeout=2000
+                            )
+
+                            print(
+                                f"   🍪 Popup fechado: {seletor}"
+                            )
+
+                            page.wait_for_timeout(500)
+
+                            return
+
+                        except Exception:
+                            continue
+
+            except Exception:
+                continue
+
+    # ================================================================
+    # PRODUTO
+    # ================================================================
 
     def get_product(self, url):
 

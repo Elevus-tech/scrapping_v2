@@ -1,0 +1,31 @@
+=== ESTRUTURA DE DIRETÓRIOS ===
+./
+    browser.py
+    config.py
+    estrutura_projeto.txt
+    excel.py
+    main.py
+    matcher.py
+    projeto_contexto.txt
+    requirements.txt
+    resumo.py
+    resumo_estrutua.py
+    utils.py
+    ai/
+    cache/
+        site_structures.json
+    debug/
+        yamaha_busca.png
+    engine/
+    input/
+        planilha_produtos_formatada_v4-1.xlsx
+        planilha_produtos_formatada_v4.xlsx
+    output/
+        planilha_precos_atualizada.xlsx
+    sites/
+        honda.py
+        matsuo.py
+        neno.py
+        tracao.py
+        yamaha.py
+        __init__.py

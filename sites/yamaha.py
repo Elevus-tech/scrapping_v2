@@ -148,7 +148,7 @@ class YamahaSite(BaseSite):
             products = []
 
             links = page.locator(
-                'a[href*="/product/"]'
+                'a[href*="/product/"][class*="bg-neutral-600"]'
             )
 
             total_links = links.count()
